@@ -1,0 +1,305 @@
+---
+title: Assessment of Doppler Velocity Index (DVI) and Echocardiographic Parameters
+  for the Diagnosis of Aortic Stenosis
+author: "Osama Ahmed Ibrahim"
+output: word_document
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+knitr::opts_chunk$set(
+  dpi = 300)
+```
+
+ R version 4.5.1 (2025-06-13) was used to conduct the analysis. Continuous variables were summarized using mean (SD) when approximately normally distributed and median (IQR) when non-normal, while categorical variables were summarized as n (%). Normality was assessed using graphical methods (e.g., histogram/QQ plot) and formal testing (e.g., Shapiro–Wilk), and correlations were evaluated using Pearson or Spearman correlation depending on distributional assumptions. Agreement between DVI_LVOT and DVI_MV was assessed with Bland–Altman analysis, and diagnostic accuracy of DVI_MV was evaluated with ROC curve analysis, reporting AUC and selecting optimal cut-offs using the Youden index with corresponding sensitivity and specificity. 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(gtsummary)
+library(patchwork)
+library(rstatix)
+library(janitor)
+library(blandr)
+library(pROC)
+library(flextable)
+
+# ── 2. DATA IMPORT ──────────────────────────────────────────
+DVI_for_AS_Data <- read_excel(path = "Project 10 data.xlsx")
+
+# ── 3. VARIABLE RENAMING ────────────────────────────────────
+# Replace short/coded column names with full clinical labels
+DVI_for_AS_Data <- DVI_for_AS_Data %>% rename(
+  "Left Ventricular Outflow Tract Diameter (cm)"           = `LVOT diameter`,
+  "Aortic Valve Mean Pressure Gradient (mmHg)"             = `AV mean pressure gradient`,
+  "Aortic Valve Velocity Time Integral (cm)"               = `AV VTI`,
+  "LVOT Velocity Time Integral (cm)"                       = `LVOT VTI`,
+  "Mitral Valve Continuous Wave Velocity Time Integral (cm)" = `MV CW VTI`,
+  "Doppler Velocity Index using LVOT"                      = `DVI LVOT`,
+  "Doppler Velocity Index using Mitral Valve"              = `DVI MV`,
+  "Aortic Valve Area (cm2)"                                = AVA,
+  "Dyslipidemia"                                           = dyslipidemia,
+  "Coronary Artery Disease"                                = CAD,
+  "Ejection Fraction"                                      = EF,
+  "Stroke"                                                 = stroke
+)
+
+# ── 4. REMOVE IDENTIFIERS ───────────────────────────────────
+# Drop patient identifiers before any analysis (de-identification)
+DVI_for_AS_Data <- DVI_for_AS_Data %>% select(-MRN, -name)
+
+# ── 5. FACTOR ENCODING ──────────────────────────────────────
+# Encode binary comorbidities as labeled factors (0 = No, 1 = Yes)
+DVI_for_AS_Data <- DVI_for_AS_Data %>%
+  mutate(across(
+    c(HTN, Dyslipidemia, DM, `Coronary Artery Disease`, Stroke, CKD),
+    ~ factor(.x, levels = c("0", "1"), labels = c("No", "Yes"))
+  ))
+
+# Encode sex as labeled factor (0 = Male, 1 = Female)
+DVI_for_AS_Data <- DVI_for_AS_Data %>%
+  mutate(Sex = factor(Sex, levels = c("0", "1"), labels = c("Male", "Female")))
+
+
+```
+### Table 1. Baseline demographic and clinical characteristics of the study cohort (N = 108).
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# ── . BASELINE CHARACTERISTICS TABLE ───────────────────────
+# Demographics and comorbidities summary (Table 1)
+DVI_for_AS_Data %>%
+  select(Age, Sex, BMI, HTN, Dyslipidemia, DM,
+         `Coronary Artery Disease`, Stroke, CKD) %>%
+  tbl_summary(
+    missing = "no",
+    statistic = Age ~ "{mean} ({sd})"   # Age is continuous → mean (SD)
+  ) %>%
+  bold_labels() %>%
+  as_flex_table()
+```
+
+  Participants had a mean age of 72 (SD 11) years, and 56% were male. Common comorbidities included hypertension (73%), diabetes mellitus (42%), dyslipidemia (35%), and coronary artery disease (35%)
+
+### Table 2. Echocardiographic parameters and Doppler velocity indices in the study cohort (N = 108).
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Echocardiographic parameters summary (Table 2)
+DVI_for_AS_Data %>%
+  select(
+    `Left Ventricular Outflow Tract Diameter (cm)`,
+    `Aortic Valve Mean Pressure Gradient (mmHg)`,
+    `Aortic Valve Velocity Time Integral (cm)`,
+    `LVOT Velocity Time Integral (cm)`,
+    `Mitral Valve Continuous Wave Velocity Time Integral (cm)`,
+    `Doppler Velocity Index using LVOT`,
+    `Doppler Velocity Index using Mitral Valve`,
+    `Aortic Valve Area (cm2)`,
+    `Ejection Fraction`
+  ) %>%
+  tbl_summary(
+    # Normally distributed variables → mean (SD); rest default to median (IQR)
+    statistic = list(
+      `Left Ventricular Outflow Tract Diameter (cm)` ~ "{mean} ({sd})",
+      `LVOT Velocity Time Integral (cm)`             ~ "{mean} ({sd})",
+      `Doppler Velocity Index using LVOT`            ~ "{mean} ({sd})"
+    )
+  ) %>%
+  bold_labels() %>%
+  as_flex_table()
+```
+
+  LVOT diameter averaged 2.05 (SD 0.19) cm, while the aortic valve mean pressure gradient had a median of 13 (Q1–Q3: 10–22) mmHg. Doppler velocity index values were 0.47 (SD 0.18) using LVOT and 0.52 (Q1–Q3: 0.33–0.65) using the mitral valve, with median AVA 1.69 (Q1–Q3: 1.10–1.94) cm².
+
+### Figure 1. Distribution of aortic valve area (AVA) categories (≤1.0, >1.0–≤1.5, >1.5–≤2.0 cm²).
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# ── 10. AVA DISTRIBUTION PLOT ────────────────────────────────
+# ── 9. AVA CATEGORIZATION ────────────────────────────────────
+# Categorize AVA into severity groups per ACC/AHA guidelines:
+#   Severe: AVA ≤ 1.0 cm²  |  Moderate: 1.0–1.5 cm²  |  Mild: 1.5–2.0 cm²
+DVI_for_AS_Data <- DVI_for_AS_Data %>%
+  mutate(AVA_cat = cut(
+    `Aortic Valve Area (cm2)`,
+    breaks = c(-Inf, 1.0, 1.5, 2.0),
+    labels = c("≤1.0", ">1.0–≤1.5", ">1.5–≤2.0"),
+    right  = TRUE
+  ))
+
+
+DVI_for_AS_Data %>%
+  filter(!is.na(AVA_cat)) %>%
+  mutate(AVA_cat = factor(AVA_cat,
+                          levels = c("≤1.0", ">1.0–≤1.5", ">1.5–≤2.0"),
+                          labels = c("Severe AS\n(AVA ≤ 1.0 cm²)",
+                                     "Moderate AS\n(AVA 1.0–1.5 cm²)",
+                                     "Mild AS\n(AVA 1.5–2.0 cm²)"))) %>%
+  ggplot(aes(x = AVA_cat)) +
+  geom_bar(aes(fill = AVA_cat), show.legend = FALSE, width = 0.55) +
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = -0.6, fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("#1E3A8A", "#2563EB", "#4E9AF1")) +  # dark→light = severe→mild
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Distribution of Aortic Valve Area Categories",
+    x     = "Aortic Valve Area Category",
+    y     = "Number of Patients"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title          = element_text(face = "bold", hjust = 0.5, size = 14,
+                                       margin = margin(b = 12)),
+    axis.text           = element_text(color = "black", size = 11),
+    axis.title.x        = element_text(face = "bold", margin = margin(t = 10)),
+    axis.title.y        = element_text(face = "bold", margin = margin(r = 10)),
+    axis.line           = element_line(color = "black"),
+    panel.grid.major.y  = element_line(color = "grey90", linetype = "dashed")
+  )
+```
+
+  Figure 1 displays the frequency distribution of AVA after categorization into clinically relevant strata used in the analysis. In the cohort, AVA had a median of 1.69 cm² (Q1–Q3: 1.10–1.94), consistent with a substantial proportion of observations above 1.5 cm².
+
+### Figure 2. Bland–Altman plot comparing DVI_LVOT and DVI_MV.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Manually compute BA components for custom ggplot
+ba <- DVI_for_AS_Data %>%
+  select(`Doppler Velocity Index using LVOT`,
+         `Doppler Velocity Index using Mitral Valve`) %>%
+  filter(complete.cases(.)) %>%
+  mutate(
+    mean = (`Doppler Velocity Index using LVOT` +
+              `Doppler Velocity Index using Mitral Valve`) / 2,
+    diff =  `Doppler Velocity Index using LVOT` -
+      `Doppler Velocity Index using Mitral Valve`
+  )
+
+# Compute bias and 95% limits of agreement (LoA = bias ± 1.96 SD)
+bias      <- mean(ba$diff)
+sd_d      <- sd(ba$diff)
+loa_upper <- bias + 1.96 * sd_d
+loa_lower <- bias - 1.96 * sd_d
+
+# Plot Bland-Altman
+ggplot(ba, aes(x = mean, y = diff)) +
+  geom_point(color = "#0B2C6B", alpha = 0.65, size = 2) +
+  geom_hline(yintercept = bias,      color = "#0B2C6B", linewidth = 1.1) +
+  geom_hline(yintercept = loa_upper, color = "#C1121F", linetype = 2, linewidth = 0.9) +
+  geom_hline(yintercept = loa_lower, color = "#C1121F", linetype = 2, linewidth = 0.9) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", color = "black", hjust = 0.5),
+    axis.title       = element_text(face = "bold", color = "black"),
+    axis.text        = element_text(color = "black"),
+    panel.grid.major = element_line(color = "#E6ECF5", linewidth = 0.4),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x     = "Mean of DVI-LVOT and DVI-MV",
+    y     = "Difference (DVI-LVOT − DVI-MV)",
+    title = "Bland–Altman Plot: DVI-LVOT vs DVI-MV"
+  )
+
+
+```
+
+Bland–Altman analysis comparing DVI derived from LVOT and from the mitral valve showed a small negative mean bias of −0.05 (LVOT − MV), with 95% limits of agreement ranging from −0.36 to 0.27. This indicates that, on average, LVOT-based DVI values were slightly lower than MV-based values, but most paired measurements differed by less than about ±0.35 units across the observed range.
+
+### Figure 3. ROC curves for DVI_MV to identify severe aortic stenosis using two reference definitions (AVA < 1 cm² and DVI_LVOT < 0.25).
+```{r echo=FALSE, fig.height=5, fig.width=7, message=FALSE}
+# ── 13. ROC ANALYSIS ─────────────────────────────────────────
+# Create binary outcome variables for two severity definitions:
+#   severe_AS_AVA: TRUE if AVA > 1 cm² (non-severe by AVA = reference standard)
+#   severe_AS_DVI: TRUE if DVI-LVOT < 0.25 (severe by LVOT criterion)
+# NOTE: direction is set to "auto" — pROC will determine whether
+#       higher or lower DVI-MV values correspond to the case group.
+#       Confirmed directions after fitting:
+#         roc_ava_for_as → controls < cases (higher DVI-MV = non-severe AVA)
+#         roc_dvi_for_as → controls > cases (lower DVI-MV = severe by LVOT)
+DVI_for_roc <- DVI_for_AS_Data %>%
+  mutate(
+    severe_AS_AVA = `Aortic Valve Area (cm2)` > 1,
+    severe_AS_DVI = `Doppler Velocity Index using LVOT` < 0.25
+  ) %>%
+  select(`Doppler Velocity Index using LVOT`, `Aortic Valve Area (cm2)`,
+         `Doppler Velocity Index using Mitral Valve`,
+         severe_AS_AVA, severe_AS_DVI)
+
+# ROC 1: DVI-MV predicting non-severe AS by AVA (AVA > 1 cm²)
+roc_ava_for_as <- roc(
+  response  = DVI_for_roc$severe_AS_AVA,
+  predictor = DVI_for_roc$`Doppler Velocity Index using Mitral Valve`,
+  levels    = c(FALSE, TRUE),
+  direction = "auto"
+)
+
+# ROC 2: DVI-MV predicting severe AS by DVI-LVOT (< 0.25)
+roc_dvi_for_as <- roc(
+  response  = DVI_for_roc$severe_AS_DVI,
+  predictor = DVI_for_roc$`Doppler Velocity Index using Mitral Valve`,
+  levels    = c(FALSE, TRUE),
+  direction = "auto"
+)
+
+# ── 14. ROC CURVE PLOT ───────────────────────────────────────
+ggroc(
+  list(
+    "Aortic Valve Area < 1 cm²"          = roc_ava_for_as,
+    "Doppler Velocity Index LVOT < 0.25" = roc_dvi_for_as
+  ),
+  legacy.axes = TRUE,  # x-axis = 1 - Specificity (conventional orientation)
+  linewidth   = 0.9
+) +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", color = "grey60", linewidth = 0.5) +
+  scale_color_manual(values = c("#2563EB", "#DC2626")) +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(
+    x     = "1 \u2212 Specificity",
+    y     = "Sensitivity",
+    color = NULL
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.text            = element_text(color = "black", size = 11),
+    axis.title           = element_text(face = "bold", size = 12),
+    axis.title.x         = element_text(margin = margin(t = 10)),
+    axis.title.y         = element_text(margin = margin(r = 10)),
+    legend.position      = c(0.97, 0.08),
+    legend.justification = c("right", "bottom"),
+    legend.text          = element_text(size = 10.5),
+    legend.key.width     = unit(1.4, "cm")
+  )
+```
+
+  The diagnostic performance of the Doppler Velocity Index using the Mitral Valve (DVI-MV) in detecting severe aortic stenosis (AS) was evaluated against two outcome definitions using receiver operating characteristic (ROC) curve analysis. When severe AS was defined by an aortic valve area (AVA) < 1 cm², DVI-MV demonstrated excellent discriminative ability, with an optimal cut-off value of 0.321, yielding a sensitivity of 94.2%, specificity of 95.5%, positive predictive value (PPV) of 98.8%, and negative predictive value (NPV) of 80.8%. In this model, higher DVI-MV values were associated with the disease group, consistent with an expected positive relationship between mitral and aortic Doppler indices. When severe AS was alternatively defined by a LVOT Doppler Velocity Index (DVI-LVOT) < 0.25, DVI-MV retained the same optimal cut-off of 0.321, achieving a sensitivity of 100.0%, specificity of 94.3%, PPV of 80.8%, and NPV of 100.0%. Notably, in this model, lower DVI-MV values were associated with severe AS classification, reflecting that both indices — mitral and LVOT — decrease concordantly in the context of severe outflow obstruction. Both ROC curves demonstrated superior performance well above the diagonal reference line, indicating strong discriminative capacity under either outcome definition
+
+### Table 3. Diagnostic accuracy of DVI_MV for severe aortic stenosis under two reference definitions (Youden-optimal cut-off)
+```{r echo=FALSE, message=FALSE}
+# ── 15. DIAGNOSTIC PERFORMANCE TABLE ────────────────────────
+# Compile cut-off, sensitivity, specificity, PPV, NPV for both models
+tab <- bind_rows(
+  coords(roc_ava_for_as, x = "best", best.method = "youden",
+         ret = c("threshold", "sensitivity", "specificity", "ppv", "npv"),
+         transpose = FALSE) %>%
+    mutate(Outcome = "Severe AS by AVA < 1 cm²", .before = 1),
+  
+  coords(roc_dvi_for_as, x = "best", best.method = "youden",
+         ret = c("threshold", "sensitivity", "specificity", "ppv", "npv"),
+         transpose = FALSE) %>%
+    mutate(Outcome = "Severe AS by DVI_LVOT < 0.25", .before = 1)
+) %>%
+  # Convert proportions to percentages for display
+  mutate(across(c(sensitivity, specificity, ppv, npv), ~ . * 100))
+
+# Format and export as publication-ready flextable
+flextable(tab) %>%
+  colformat_double(j = "threshold",
+                   digits = 3) %>%
+  colformat_double(j = c("sensitivity", "specificity", "ppv", "npv"),
+                   digits = 1) %>%
+  set_header_labels(
+    Outcome     = "Outcome definition",
+    threshold   = "Optimal cut-off",
+    sensitivity = "Sensitivity (%)",
+    specificity = "Specificity (%)",
+    ppv         = "PPV (%)",
+    npv         = "NPV (%)"
+  ) %>%
+  theme_vanilla() %>%
+  autofit()
+```
